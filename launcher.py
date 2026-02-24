@@ -28,8 +28,11 @@ def main() -> None:
         try:
             level = importlib.import_module(module_path)
         except (ImportError, ModuleNotFoundError):
-            print(f"level {key} not yet implemented.")
-            break
+            # Next level not yet built — loop back to the beginning
+            carry.level_index = 0
+            save_carry(carry)
+            main()
+            return
 
         carry = level.run(carry)
         carry.level_index += 1
