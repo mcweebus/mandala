@@ -1,6 +1,7 @@
 # levels/l01_archaea/main.py
 # Level 1 — Archaebacteria.
-# Game loop, curses lifecycle, dissolution ceremony.
+# Two phases: navigate to vent (text adventure), catch compounds (ASCII invaders).
+# 18 bacteria must complete the cycle to build marine sediment.
 
 import curses
 import time
@@ -11,8 +12,9 @@ from state import CarryState
 from . import world, view
 from . import text as txt
 
-TICK_INTERVAL = 0.15   # seconds between world ticks
-FRAME_INTERVAL = 0.033  # ~30fps
+TICK_INTERVAL  = 0.12    # seconds between catch-phase ticks
+FRAME_INTERVAL = 0.033   # ~30 fps
+MSG_DURATION   = 3.0     # seconds a message stays visible
 
 
 def run(carry: CarryState) -> CarryState:
@@ -21,84 +23,92 @@ def run(carry: CarryState) -> CarryState:
 
 def _run_wrapped(stdscr, carry: CarryState) -> CarryState:
     scr.init_screen(stdscr)
-    while True:
-        result = _play(stdscr, carry)
-        if result is not None:
-            return result
-        # death — brief message, regenerate
-        view.draw_death(stdscr, txt.DEATH_MSG)
-        curses.napms(1800)
+    ls = world.generate_state()
+    return _play(stdscr, ls, carry)
 
 
-def _play(stdscr, carry: CarryState):
-    ls  = world.generate_map()
-    msg = txt.ENTER
+def _play(stdscr, ls: world.LevelState, carry: CarryState) -> CarryState:
+    msg        = ""
+    msg_at     = time.monotonic()
     last_tick  = time.monotonic()
     last_frame = time.monotonic()
 
     while True:
         now = time.monotonic()
 
-        # ── World tick ──────────────────────────────────────
-        if now - last_tick >= TICK_INTERVAL:
-            tick_msg = world.world_tick(ls)
-            if tick_msg and not msg:
-                msg = tick_msg
+        # ── Catch-phase tick ──────────────────────────────────
+        if ls.phase == "catch" and now - last_tick >= TICK_INTERVAL:
+            world.catch_tick(ls)
+            result = world.catch_check_collision(ls)
+            if result == "caught":
+                sink_msg = random.choice(txt.SINK_LINES)
+                view.draw_sink(stdscr, ls, sink_msg)
+                curses.napms(900)
+                world.next_bacterium(ls)
+                if ls.won:
+                    return _dissolve(stdscr, ls, carry)
+                msg, msg_at = txt.CATCH_SUCCESS, now
+            elif result == "wrong":
+                msg, msg_at = txt.CATCH_WRONG, now
             last_tick = now
 
-            if ls.energy <= 0:
-                return None   # signal death
-
-            if ls.won:
-                return _dissolve(stdscr, ls, carry)
-
-        # ── Render ──────────────────────────────────────────
+        # ── Render ────────────────────────────────────────────
         if now - last_frame >= FRAME_INTERVAL:
-            view.draw(stdscr, ls, msg)
-            msg = ""
+            display_msg = msg if (now - msg_at <= MSG_DURATION) else ""
+            if ls.phase == "nav":
+                view.draw_nav(stdscr, ls, display_msg)
+            else:
+                view.draw_catch(stdscr, ls, display_msg)
             last_frame = now
 
-        # ── Input ───────────────────────────────────────────
+        # ── Input ─────────────────────────────────────────────
         key = scr.get_key(stdscr)
-        if key == "UP":    m = world.move_player(ls, 0, -1)
-        elif key == "DOWN":  m = world.move_player(ls, 0,  1)
-        elif key == "LEFT":  m = world.move_player(ls, -1, 0)
-        elif key == "RIGHT": m = world.move_player(ls,  1, 0)
-        else:                m = ""
-        if m:
-            msg = m
+
+        if ls.phase == "nav":
+            if key == "LEFT":
+                m = world.nav_move(ls, "left")
+            elif key == "RIGHT":
+                m = world.nav_move(ls, "right")
+            elif key == "UP":
+                m = world.nav_move(ls, "forward")
+            else:
+                m = ""
+            if m:
+                msg, msg_at = m, now
+            if world.nav_arrived(ls):
+                ls.phase = "catch"
+
+        elif ls.phase == "catch":
+            if key == "LEFT":
+                world.catch_move(ls, -2)
+            elif key == "RIGHT":
+                world.catch_move(ls, 2)
 
         curses.napms(10)
 
 
 def _dissolve(stdscr, ls: world.LevelState, carry: CarryState) -> CarryState:
-    # Win screen
-    view.draw_win(stdscr, ls, txt.WIN_MESSAGE)
+    # Win beat
+    view.draw_win(stdscr, txt.WIN_MESSAGE)
     curses.napms(2500)
 
-    # Dissolution ceremony — tiles convert back to rock one by one
-    positions = world.conditioned_positions(ls)
-    dissolve_lines = txt.DISSOLVE_LINES
-
-    for i, (x, y) in enumerate(positions):
-        ls.grid[y][x] = world.ROCK
-        step_msg = dissolve_lines[i % len(dissolve_lines)]
-        view.draw_dissolve(stdscr, ls, step_msg)
-        curses.napms(70)
+    # Dissolution — one line at a time
+    for line in txt.DISSOLVE_LINES:
+        view.draw_dissolve_line(stdscr, line)
+        curses.napms(700)
 
     # Final stillness
     stdscr.erase()
-    height, width = stdscr.getmaxyx()
-    cx = max(0, (width - len(txt.DISSOLVED)) // 2)
-    scr.addstr(stdscr, height // 2, cx, txt.DISSOLVED, dim=True)
+    h, sw = stdscr.getmaxyx()
+    cx = max(0, (sw - len(txt.DISSOLVED)) // 2)
+    scr.addstr(stdscr, h // 2, cx, txt.DISSOLVED, dim=True)
     stdscr.refresh()
     curses.napms(3000)
 
-    # Record to carry
+    # Carry
     data = world.serialize_for_carry(ls)
     carry.substrate["archaea"] = data
     carry.origin_x = data["origin_x"]
     carry.origin_y = data["origin_y"]
-    carry.dissolved.append("archaea — the substrate holds what was made here")
-
+    carry.dissolved.append("archaea — the sediment remembers")
     return carry

@@ -1,325 +1,204 @@
 # levels/l01_archaea/world.py
 # Pure engine logic. No curses imports.
-# Grid, state, generation, tick, movement.
+# Phase 1: navigation via relative heading across a 2D grid.
+# Phase 2: catch — compounds rise from vent, player intercepts.
 
 from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 from . import text as txt
 
-MAP_W = 44
-MAP_H = 16
+# ── Navigation grid ───────────────────────────────────────────
+NAV_W = 22
+NAV_H = 16
 
-# ── Tile types ────────────────────────────────────────────────
-ROCK        = "R"
-SULFUR      = "S"
-IRON        = "I"
-METHANE     = "M"
-HOT         = "H"
-ACID        = "A"
-BIOFILM     = "B"
-CONDITIONED = "C"
-COMPETITOR  = "W"
-
-# Display: (char, bold, dim)
-TILE_DISPLAY = {
-    ROCK:        (".", False, True),
-    SULFUR:      ("s", True,  False),
-    IRON:        ("i", True,  False),
-    METHANE:     ("m", True,  False),
-    HOT:         ("^", True,  False),
-    ACID:        ("~", False, False),
-    BIOFILM:     (",", False, True),
-    CONDITIONED: ("+", False, False),
-    COMPETITOR:  ("w", False, True),
+HEADINGS = ["N", "E", "S", "W"]   # clockwise order
+HEADING_DELTA = {
+    "N": (0, -1),
+    "E": (1,  0),
+    "S": (0,  1),
+    "W": (-1, 0),
 }
 
-CONSUMABLE  = {SULFUR, IRON, METHANE}
-HAZARD      = {HOT, ACID}
-IMPASSABLE  = {COMPETITOR}
-SEEDABLE    = {ROCK, SULFUR, IRON, METHANE}
+# ── Catch arena ───────────────────────────────────────────────
+CATCH_COLS    = 44
+CATCH_ROWS    = 20
+SPAWN_INTERVAL = 10    # ticks between new compound spawns
+RISE_SPEED    = 1      # rows per tick (toward player)
+COMPOUNDS     = ["S", "F", "H", "C"]
 
-BIOFILM_MATURE    = 55     # ticks for biofilm to become conditioned
-SPREAD_INTERVAL   = 8      # ticks between competitor spread
-ERODE_INTERVAL    = 22     # ticks between competitor biofilm erosion
-DRAIN_INTERVAL    = 5      # ticks between passive energy drain
-PASSIVE_INTERVAL  = 12     # ticks between passive biomass from conditioned
-COMPETITOR_CAP    = int(MAP_W * MAP_H * 0.22)  # max competitor tiles
-
-WIN_COVERAGE  = 0.30   # fraction of map that must be conditioned
-WIN_BIOMASS   = 80     # minimum biomass to win
+# ── Win condition ─────────────────────────────────────────────
+WIN_DEAD = 18
 
 
 # ── State ─────────────────────────────────────────────────────
 @dataclass
+class CompoundSprite:
+    x: int
+    y: int
+    kind: str
+
+
+@dataclass
 class LevelState:
-    grid:   list = field(default_factory=list)  # grid[y][x] = tile type
-    age:    list = field(default_factory=list)  # age[y][x] = int (biofilm age)
-    px:     int  = 0
-    py:     int  = 0
-    energy: int  = 100
-    biomass: int = 0
-    ticks:  int  = 0
-    won:    bool = False
+    # Navigation
+    nx:      int  = NAV_W // 2
+    ny:      int  = 0
+    heading: str  = "S"
+    vent_x:  int  = 0
+    vent_y:  int  = 0
+
+    # Phase
+    phase:   str  = "nav"   # "nav" | "catch"
+    first:   bool = True    # True until first bacterium completes nav
+
+    # Catch
+    target:     str  = "S"
+    sprites:    list = field(default_factory=list)
+    catch_px:   int  = CATCH_COLS // 2
+    catch_ticks: int = 0
+
+    # Progress
+    dead_count: int  = 0
+    won:        bool = False
 
 
-# ── Map generation ────────────────────────────────────────────
-def generate_map() -> LevelState:
-    grid = [[ROCK] * MAP_W for _ in range(MAP_H)]
-    age  = [[0]    * MAP_W for _ in range(MAP_H)]
-
-    # Sulfur seams — upper two-thirds, 3 veins
-    for _ in range(3):
-        sx = random.randint(0, MAP_W - 1)
-        sy = random.randint(0, int(MAP_H * 0.65))
-        _vein(grid, SULFUR, sx, sy, length=random.randint(10, 18))
-
-    # Iron seams — middle zone, 2 veins
-    for _ in range(2):
-        sx = random.randint(0, MAP_W - 1)
-        sy = random.randint(MAP_H // 4, int(MAP_H * 0.75))
-        _vein(grid, IRON, sx, sy, length=random.randint(7, 13))
-
-    # Methane pockets — lower half, rare, 1-2 clusters
-    for _ in range(random.randint(1, 2)):
-        sx = random.randint(2, MAP_W - 3)
-        sy = random.randint(MAP_H // 2, MAP_H - 2)
-        _cluster(grid, METHANE, sx, sy, radius=random.randint(1, 2),
-                 avoid={HOT})
-
-    # Hot zones — 2 thermal clusters, weighted toward bottom
-    for _ in range(2):
-        sx = random.randint(4, MAP_W - 5)
-        sy = random.randint(MAP_H // 2, MAP_H - 2)
-        _cluster(grid, HOT, sx, sy, radius=random.randint(2, 3),
-                 avoid={COMPETITOR})
-
-    # Acid zones — 1-2 small patches, anywhere
-    for _ in range(random.randint(1, 2)):
-        sx = random.randint(1, MAP_W - 2)
-        sy = random.randint(1, MAP_H - 2)
-        _cluster(grid, ACID, sx, sy, radius=random.randint(1, 2),
-                 avoid={HOT, COMPETITOR})
-
-    # Competitors — seeded at left and right edges
-    cy_a = random.randint(2, MAP_H - 3)
-    cy_b = random.randint(2, MAP_H - 3)
-    _cluster(grid, COMPETITOR, 1,         cy_a, radius=1, avoid=HAZARD)
-    _cluster(grid, COMPETITOR, MAP_W - 2, cy_b, radius=1, avoid=HAZARD)
-
-    # Player start — center, shift if hazard or competitor
-    px, py = MAP_W // 2, MAP_H // 2
-    attempts = 0
-    while grid[py][px] in HAZARD | IMPASSABLE and attempts < MAP_W:
-        px = (px + 1) % MAP_W
-        attempts += 1
-
-    # Seed starting tile as biofilm
-    grid[py][px] = BIOFILM
-    age[py][px] = 0
-
-    ls = LevelState(grid=grid, age=age, px=px, py=py)
-    return ls
+# ── Generation ────────────────────────────────────────────────
+def generate_state() -> LevelState:
+    vent_x = random.randint(NAV_W // 4, 3 * NAV_W // 4)
+    vent_y = random.randint(NAV_H - 5, NAV_H - 1)
+    return LevelState(
+        nx=NAV_W // 2,
+        ny=0,
+        heading="S",
+        vent_x=vent_x,
+        vent_y=vent_y,
+        target=random.choice(COMPOUNDS),
+    )
 
 
-def _vein(grid, tile_type: str, x: int, y: int, length: int) -> None:
-    dx = random.choice([-1, 1])
-    for _ in range(length):
-        x = max(0, min(MAP_W - 1, x))
-        y = max(0, min(MAP_H - 1, y))
-        if grid[y][x] not in (HOT, COMPETITOR):
-            grid[y][x] = tile_type
-        # Drift: mostly horizontal with occasional vertical shift
-        if random.random() < 0.25:
-            y += random.choice([-1, 0, 1])
-        else:
-            x += dx
-            if random.random() < 0.08:
-                dx = -dx
+# ── Navigation helpers ────────────────────────────────────────
+def nav_proximity(ls: LevelState) -> float:
+    """0.0 = far from vent, 1.0 = at vent."""
+    dist = abs(ls.nx - ls.vent_x) + abs(ls.ny - ls.vent_y)
+    return max(0.0, 1.0 - dist / (NAV_W + NAV_H))
 
 
-def _cluster(grid, tile_type: str, cx: int, cy: int,
-             radius: int, avoid: set | None = None) -> None:
-    avoid = avoid or set()
-    for dy in range(-radius, radius + 1):
-        for dx in range(-radius, radius + 1):
-            nx, ny = cx + dx, cy + dy
-            if not (0 <= nx < MAP_W and 0 <= ny < MAP_H):
-                continue
-            dist = abs(dx) + abs(dy)
-            if dist > radius:
-                continue
-            prob = 1.0 - (dist / (radius + 1)) * 0.6
-            if random.random() < prob and grid[ny][nx] not in avoid:
-                grid[ny][nx] = tile_type
+def nav_arrived(ls: LevelState) -> bool:
+    return ls.nx == ls.vent_x and ls.ny == ls.vent_y
 
 
-# ── Movement ──────────────────────────────────────────────────
-def move_player(ls: LevelState, dx: int, dy: int) -> str:
-    nx = ls.px + dx
-    ny = ls.py + dy
+def _turn_left(h: str) -> str:
+    return HEADINGS[(HEADINGS.index(h) - 1) % 4]
 
-    if not (0 <= nx < MAP_W and 0 <= ny < MAP_H):
+
+def _turn_right(h: str) -> str:
+    return HEADINGS[(HEADINGS.index(h) + 1) % 4]
+
+
+def _forward_pos(nx: int, ny: int, heading: str) -> tuple[int, int]:
+    dx, dy = HEADING_DELTA[heading]
+    return (
+        max(0, min(NAV_W - 1, nx + dx)),
+        max(0, min(NAV_H - 1, ny + dy)),
+    )
+
+
+def nav_warmer_direction(ls: LevelState) -> str:
+    """Return 'left', 'forward', or 'right' — whichever leads closest to vent."""
+    def dist_from(nx: int, ny: int) -> int:
+        return abs(nx - ls.vent_x) + abs(ny - ls.vent_y)
+
+    fx, fy = _forward_pos(ls.nx, ls.ny, ls.heading)
+    lx, ly = _forward_pos(ls.nx, ls.ny, _turn_left(ls.heading))
+    rx, ry = _forward_pos(ls.nx, ls.ny, _turn_right(ls.heading))
+
+    options = {
+        "forward": dist_from(fx, fy),
+        "left":    dist_from(lx, ly),
+        "right":   dist_from(rx, ry),
+    }
+    return min(options, key=options.get)
+
+
+def nav_move(ls: LevelState, action: str) -> str:
+    """Mutate ls. Return flavor text or ''."""
+    if action == "left":
+        ls.heading = _turn_left(ls.heading)
         return ""
-
-    tile = ls.grid[ny][nx]
-
-    if tile in IMPASSABLE:
-        return random.choice(
-            ["the other colony holds this.",
-             "something else has claimed this ground."]
-        )
-
-    ls.px, ls.py = nx, ny
-    msg = ""
-
-    if tile == SULFUR:
-        ls.energy = min(100, ls.energy + 15)
-        ls.biomass += 8
-        ls.grid[ny][nx] = BIOFILM
-        ls.age[ny][nx] = 0
-        msg = random.choice(txt.CONSUME_SULFUR)
-    elif tile == IRON:
-        ls.energy = min(100, ls.energy + 25)
-        ls.biomass += 15
-        ls.grid[ny][nx] = BIOFILM
-        ls.age[ny][nx] = 0
-        msg = random.choice(txt.CONSUME_IRON)
-    elif tile == METHANE:
-        ls.energy = min(100, ls.energy + 40)
-        ls.biomass += 30
-        ls.grid[ny][nx] = BIOFILM
-        ls.age[ny][nx] = 0
-        msg = random.choice(txt.CONSUME_METHANE)
-    elif tile in SEEDABLE:
-        ls.grid[ny][nx] = BIOFILM
-        ls.age[ny][nx] = 0
-    elif tile in HAZARD:
-        msg = random.choice(txt.ENTER_HOT if tile == HOT else txt.ENTER_ACID)
-    # BIOFILM and CONDITIONED: player moves on them with no change
-
-    return msg
+    if action == "right":
+        ls.heading = _turn_right(ls.heading)
+        return ""
+    if action == "forward":
+        ls.nx, ls.ny = _forward_pos(ls.nx, ls.ny, ls.heading)
+        if nav_arrived(ls):
+            return txt.ARRIVE_VENT
+        prox = nav_proximity(ls)
+        if prox > 0.65:
+            return random.choice(txt.ATMOSPHERE_CLOSE)
+        if prox > 0.35:
+            return random.choice(txt.ATMOSPHERE_MED)
+        return random.choice(txt.ATMOSPHERE_FAR)
+    return ""
 
 
-# ── World tick ────────────────────────────────────────────────
-def world_tick(ls: LevelState) -> str | None:
-    ls.ticks += 1
-    msg = None
+# ── Catch phase ───────────────────────────────────────────────
+def catch_tick(ls: LevelState) -> None:
+    ls.catch_ticks += 1
 
-    # Passive energy drain
-    if ls.ticks % DRAIN_INTERVAL == 0:
-        drain = 1
-        tile = ls.grid[ls.py][ls.px]
-        if tile == HOT:
-            drain += 2
-        elif tile == ACID:
-            drain += 1
-        ls.energy = max(0, ls.energy - drain)
+    # Spawn a new compound — biased 40% toward target
+    if ls.catch_ticks % SPAWN_INTERVAL == 0:
+        kind = ls.target if random.random() < 0.4 else random.choice(COMPOUNDS)
+        ls.sprites.append(CompoundSprite(
+            x=random.randint(0, CATCH_COLS - 1),
+            y=CATCH_ROWS - 1,
+            kind=kind,
+        ))
 
-    # Biofilm aging → conditioned
-    for y in range(MAP_H):
-        for x in range(MAP_W):
-            if ls.grid[y][x] == BIOFILM:
-                ls.age[y][x] += 1
-                if ls.age[y][x] >= BIOFILM_MATURE:
-                    ls.grid[y][x] = CONDITIONED
-                    ls.age[y][x] = 0
-
-    # Passive biomass from conditioned tiles
-    if ls.ticks % PASSIVE_INTERVAL == 0:
-        cond = count_conditioned(ls)
-        if cond > 0:
-            ls.biomass += max(1, cond // 18)
-
-    # Competitor spread
-    if ls.ticks % SPREAD_INTERVAL == 0:
-        _competitor_spread(ls)
-
-    # Competitor erosion of biofilm
-    if ls.ticks % ERODE_INTERVAL == 0:
-        _competitor_erode(ls)
-
-    # Ambient message
-    if ls.ticks % 48 == 0 and ls.ticks > 0:
-        msg = random.choice(txt.AMBIENT)
-
-    # Win check
-    check_win(ls)
-
-    return msg
+    # Rise all sprites
+    for s in ls.sprites:
+        s.y -= RISE_SPEED
+    ls.sprites = [s for s in ls.sprites if s.y >= 0]
 
 
-def _competitor_spread(ls: LevelState) -> None:
-    comp_total = sum(
-        1 for y in range(MAP_H) for x in range(MAP_W)
-        if ls.grid[y][x] == COMPETITOR
-    )
-    if comp_total >= COMPETITOR_CAP:
-        return
-
-    candidates = []
-    for y in range(MAP_H):
-        for x in range(MAP_W):
-            if ls.grid[y][x] == COMPETITOR:
-                for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                    nx, ny = x + dx, y + dy
-                    if 0 <= nx < MAP_W and 0 <= ny < MAP_H:
-                        t = ls.grid[ny][nx]
-                        if t == ROCK:
-                            candidates.append((nx, ny))
-
-    random.shuffle(candidates)
-    for nx, ny in candidates[:2]:
-        ls.grid[ny][nx] = COMPETITOR
+def catch_check_collision(ls: LevelState) -> str | None:
+    """Check if any sprite has reached player row (y == 0). Returns 'caught', 'wrong', or None."""
+    result = None
+    remaining = []
+    for s in ls.sprites:
+        if s.y == 0 and abs(s.x - ls.catch_px) <= 1:
+            if result is None:
+                result = "caught" if s.kind == ls.target else "wrong"
+            # sprite consumed regardless
+        else:
+            remaining.append(s)
+    ls.sprites = remaining
+    return result
 
 
-def _competitor_erode(ls: LevelState) -> None:
-    candidates = []
-    for y in range(MAP_H):
-        for x in range(MAP_W):
-            if ls.grid[y][x] == COMPETITOR:
-                for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                    nx, ny = x + dx, y + dy
-                    if 0 <= nx < MAP_W and 0 <= ny < MAP_H:
-                        if ls.grid[ny][nx] == BIOFILM:
-                            candidates.append((nx, ny))
-
-    if candidates:
-        nx, ny = random.choice(candidates)
-        ls.grid[ny][nx] = ROCK
-        ls.age[ny][nx] = 0
+def catch_move(ls: LevelState, dx: int) -> None:
+    ls.catch_px = max(0, min(CATCH_COLS - 1, ls.catch_px + dx))
 
 
-# ── Win / utility ─────────────────────────────────────────────
-def check_win(ls: LevelState) -> None:
-    if ls.won:
-        return
-    cond = count_conditioned(ls)
-    if cond >= MAP_W * MAP_H * WIN_COVERAGE and ls.biomass >= WIN_BIOMASS:
+def next_bacterium(ls: LevelState) -> None:
+    """Called after a bacterium has sunk. Prepare the next one."""
+    ls.dead_count += 1
+    ls.first = False
+    ls.sprites = []
+    ls.catch_ticks = 0
+    ls.target = random.choice(COMPOUNDS)
+    ls.catch_px = CATCH_COLS // 2
+    if ls.dead_count >= WIN_DEAD:
         ls.won = True
+    else:
+        ls.phase = "catch"   # subsequent bacteria start at vent
 
 
-def count_conditioned(ls: LevelState) -> int:
-    return sum(
-        1 for y in range(MAP_H) for x in range(MAP_W)
-        if ls.grid[y][x] == CONDITIONED
-    )
-
-
-def conditioned_positions(ls: LevelState) -> list[tuple[int, int]]:
-    positions = [
-        (x, y) for y in range(MAP_H) for x in range(MAP_W)
-        if ls.grid[y][x] == CONDITIONED
-    ]
-    random.shuffle(positions)
-    return positions[:150]
-
-
+# ── Carry serialization ───────────────────────────────────────
 def serialize_for_carry(ls: LevelState) -> dict:
-    cond = count_conditioned(ls)
     return {
-        "conditioned_count": cond,
-        "coverage": round(cond / (MAP_W * MAP_H), 3),
-        "origin_x": round(ls.px / (MAP_W - 1), 3),
-        "origin_y": round(ls.py / (MAP_H - 1), 3),
+        "dead_count": ls.dead_count,
+        "coverage":   round(ls.dead_count / WIN_DEAD, 3),
+        "origin_x":   round(ls.vent_x / (NAV_W - 1), 3),
+        "origin_y":   round(ls.vent_y / (NAV_H - 1), 3),
     }
