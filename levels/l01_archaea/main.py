@@ -65,11 +65,11 @@ def _play(stdscr, ls: world.LevelState, carry: CarryState) -> CarryState:
         key = scr.get_key(stdscr)
 
         if ls.phase == "nav":
-            if key == "LEFT":
+            if key in ("a", "LEFT"):
                 m = world.nav_move(ls, "left")
-            elif key == "RIGHT":
+            elif key in ("d", "RIGHT"):
                 m = world.nav_move(ls, "right")
-            elif key == "UP":
+            elif key in ("w", "UP"):
                 m = world.nav_move(ls, "forward")
             else:
                 m = ""
@@ -79,9 +79,9 @@ def _play(stdscr, ls: world.LevelState, carry: CarryState) -> CarryState:
                 ls.phase = "catch"
 
         elif ls.phase == "catch":
-            if key == "LEFT":
+            if key in ("a", "LEFT"):
                 world.catch_move(ls, -2)
-            elif key == "RIGHT":
+            elif key in ("d", "RIGHT"):
                 world.catch_move(ls, 2)
 
         curses.napms(10)

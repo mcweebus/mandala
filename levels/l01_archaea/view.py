@@ -25,9 +25,9 @@ def draw_nav(stdscr, ls: w.LevelState, msg: str = "") -> None:
 def _draw_nav_options(stdscr, h: int, warmer: str) -> None:
     _, sw = stdscr.getmaxyx()
     labels = [
-        ("left",    "< left"),
-        ("forward", "^ forward"),
-        ("right",   "> right"),
+        ("left",    "a left"),
+        ("forward", "w forward"),
+        ("right",   "d right"),
     ]
     gap = 4
     total_w = sum(len(lbl) for _, lbl in labels) + gap * (len(labels) - 1)
@@ -73,7 +73,7 @@ def draw_catch(stdscr, ls: w.LevelState, msg: str = "") -> None:
 
     if msg:
         scr.addstr(stdscr, h - 2, 2, msg, dim=True)
-    scr.addstr(stdscr, h - 1, 2, "< > to move", dim=True)
+    scr.addstr(stdscr, h - 1, 2, "a d to move", dim=True)
     stdscr.refresh()
 
 
