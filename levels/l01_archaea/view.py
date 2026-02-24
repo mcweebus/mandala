@@ -1,6 +1,6 @@
 # levels/l01_archaea/view.py
 # Curses rendering for the archaebacteria level.
-# Phase 1 (nav): black screen, three dim options, one warm.
+# Phase 1 (nav): three vertical panels, warm direction slightly brighter.
 # Phase 2 (catch): ASCII invaders — compounds rise from vent, player at top.
 # Monochrome only.
 
@@ -8,36 +8,57 @@ import screen as scr
 from . import world as w
 from . import text as txt
 
+_FILL_CHAR = "."
+
 
 # ── Navigation view ───────────────────────────────────────────
 def draw_nav(stdscr, ls: w.LevelState, msg: str = "") -> None:
     stdscr.erase()
-    h, _ = stdscr.getmaxyx()
+    h, sw = stdscr.getmaxyx()
 
+    panel_w = sw // 3
+    warmer  = w.nav_warmer_direction(ls)
+    prox    = w.nav_proximity(ls)
+
+    panels = [
+        ("left",    0,           panel_w),
+        ("forward", panel_w,     panel_w * 2),
+        ("right",   panel_w * 2, sw),
+    ]
+
+    for direction, x0, x1 in panels:
+        _fill_panel(stdscr, h, x0, x1, direction == warmer, prox)
+
+    # Faint vertical dividers
+    for row in range(h):
+        scr.addch(stdscr, row, panel_w - 1,     "|", dim=True)
+        scr.addch(stdscr, row, panel_w * 2 - 1, "|", dim=True)
+
+    # Key hints — barely visible at bottom of each panel
+    hint_row = h - 2
+    scr.addch(stdscr, hint_row, panel_w // 2,                    "a", dim=True)
+    scr.addch(stdscr, hint_row, panel_w + panel_w // 2,          "w", dim=True)
+    scr.addch(stdscr, hint_row, panel_w * 2 + (sw - panel_w * 2) // 2, "d", dim=True)
+
+    # Atmospheric text centered, overlaid dim
     if msg:
         _draw_centered(stdscr, h // 2, msg, dim=True)
 
-    warmer = w.nav_warmer_direction(ls)
-    _draw_nav_options(stdscr, h, warmer)
     stdscr.refresh()
 
 
-def _draw_nav_options(stdscr, h: int, warmer: str) -> None:
-    _, sw = stdscr.getmaxyx()
-    labels = [
-        ("left",    "a left"),
-        ("forward", "w forward"),
-        ("right",   "d right"),
-    ]
-    gap = 4
-    total_w = sum(len(lbl) for _, lbl in labels) + gap * (len(labels) - 1)
-    x = max(0, (sw - total_w) // 2)
-    row = h - 3
-
-    for key, lbl in labels:
-        is_warm = (key == warmer)
-        scr.addstr(stdscr, row, x, lbl, bold=is_warm, dim=not is_warm)
-        x += len(lbl) + gap
+def _fill_panel(stdscr, h: int, x0: int, x1: int,
+                is_warm: bool, prox: float) -> None:
+    """Fill a nav panel with sparse dots. Warm panel is brighter."""
+    for row in range(1, h - 2):
+        for col in range(x0 + 1, x1 - 1):
+            if (row * 17 + col * 11) % 13 == 0:
+                if is_warm:
+                    bold = prox > 0.60
+                    dim  = prox < 0.20
+                    scr.addch(stdscr, row, col, _FILL_CHAR, bold=bold, dim=dim)
+                else:
+                    scr.addch(stdscr, row, col, _FILL_CHAR, dim=True)
 
 
 # ── Catch view ────────────────────────────────────────────────
@@ -81,9 +102,8 @@ def draw_catch(stdscr, ls: w.LevelState, msg: str = "") -> None:
 def draw_sink(stdscr, ls: w.LevelState, msg: str) -> None:
     stdscr.erase()
     h, _ = stdscr.getmaxyx()
-    _draw_centered(stdscr, h // 2, msg, dim=True)
-    count_str = f"{ls.dead_count + 1} of {w.WIN_DEAD}"
-    _draw_centered(stdscr, h // 2 + 2, count_str, dim=True)
+    _draw_centered(stdscr, h // 2,     msg,                                  dim=True)
+    _draw_centered(stdscr, h // 2 + 2, f"{ls.dead_count + 1} of {w.WIN_DEAD}", dim=True)
     stdscr.refresh()
 
 

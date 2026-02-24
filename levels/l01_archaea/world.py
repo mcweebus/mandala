@@ -65,12 +65,17 @@ class LevelState:
 
 # ── Generation ────────────────────────────────────────────────
 def generate_state() -> LevelState:
-    vent_x = random.randint(NAV_W // 4, 3 * NAV_W // 4)
-    vent_y = random.randint(NAV_H - 5, NAV_H - 1)
+    # Vent anywhere in the lower two-thirds, full width
+    vent_x = random.randint(2, NAV_W - 3)
+    vent_y = random.randint(NAV_H // 3, NAV_H - 1)
+
+    # Player starts at center with a random heading — no guaranteed "forward" answer
+    heading = random.choice(HEADINGS)
+
     return LevelState(
         nx=NAV_W // 2,
-        ny=0,
-        heading="S",
+        ny=NAV_H // 2,
+        heading=heading,
         vent_x=vent_x,
         vent_y=vent_y,
         target=random.choice(COMPOUNDS),
