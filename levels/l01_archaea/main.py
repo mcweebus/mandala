@@ -1,11 +1,12 @@
 # levels/l01_archaea/main.py
 # Level 1 — Archaebacteria.
 # Two phases: navigate to vent (text adventure), catch compounds (ASCII invaders).
-# 18 bacteria must complete the cycle to build marine sediment.
+# Each bacterium must absorb all four compound types before it completes.
+# On completion the body lights up and floats to the bottom as sediment.
+# WIN_DEAD bacteria must settle to finish the level.
 
 import curses
 import time
-import random
 
 import screen as scr
 from state import CarryState
@@ -29,7 +30,7 @@ def _run_wrapped(stdscr, carry: CarryState) -> CarryState:
 
 def _play(stdscr, ls: world.LevelState, carry: CarryState) -> CarryState:
     msg        = ""
-    msg_at     = time.monotonic()
+    msg_at     = 0.0
     last_tick  = time.monotonic()
     last_frame = time.monotonic()
 
@@ -39,17 +40,18 @@ def _play(stdscr, ls: world.LevelState, carry: CarryState) -> CarryState:
         # ── Catch-phase tick ──────────────────────────────────
         if ls.phase == "catch" and now - last_tick >= TICK_INTERVAL:
             world.catch_tick(ls)
-            result = world.catch_check_collision(ls)
-            if result == "caught":
-                sink_msg = random.choice(txt.SINK_LINES)
-                view.draw_sink(stdscr, ls, sink_msg)
-                curses.napms(900)
-                world.next_bacterium(ls)
-                if ls.won:
-                    return _dissolve(stdscr, ls, carry)
-                msg, msg_at = txt.CATCH_SUCCESS, now
-            elif result == "wrong":
-                msg, msg_at = txt.CATCH_WRONG, now
+
+            if ls.won:
+                return _dissolve(stdscr, ls, carry)
+
+            # Collision only when the living bacterium is present (not floating)
+            if not ls.floating:
+                result = world.catch_check_collision(ls)
+                if result == "collected":
+                    msg, msg_at = txt.CATCH_SUCCESS, now
+                elif result == "all_collected":
+                    msg, msg_at = txt.ALL_COLLECTED_MSG, now
+
             last_tick = now
 
         # ── Render ────────────────────────────────────────────
@@ -78,7 +80,8 @@ def _play(stdscr, ls: world.LevelState, carry: CarryState) -> CarryState:
             if world.nav_arrived(ls):
                 ls.phase = "catch"
 
-        elif ls.phase == "catch":
+        elif ls.phase == "catch" and not ls.floating:
+            # Disable movement during float — the death animation plays uninterrupted.
             if key in ("a", "LEFT"):
                 world.catch_move(ls, -2)
             elif key in ("d", "RIGHT"):

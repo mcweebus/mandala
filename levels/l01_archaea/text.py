@@ -30,9 +30,9 @@ ATMOSPHERE_CLOSE = [
 ARRIVE_VENT = "the vent. it is here."
 
 # ── Catch phase ───────────────────────────────────────────────
-CATCH_WRONG   = "wrong compound. it passes."
-CATCH_SUCCESS = "the compound is absorbed."
-CATCH_MISS    = ""
+CATCH_SUCCESS     = "absorbed."
+ALL_COLLECTED_MSG = "the chemistry is complete. it sinks."
+CATCH_MISS        = ""
 
 COMPOUND_NAMES = {
     "S":  "sulfur",

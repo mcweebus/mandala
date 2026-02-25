@@ -1,7 +1,8 @@
 # levels/l01_archaea/world.py
 # Pure engine logic. No curses imports.
 # Phase 1: navigation via relative heading across a 2D grid.
-# Phase 2: catch — compounds rise from vent, player intercepts.
+# Phase 2: catch — compounds rise from vent, player collects all four types.
+#           When complete the bacterium lights up and floats to the bottom.
 
 from __future__ import annotations
 import random
@@ -12,7 +13,7 @@ from . import text as txt
 NAV_W = 22
 NAV_H = 16
 
-HEADINGS = ["N", "E", "S", "W"]   # clockwise order
+HEADINGS = ["N", "E", "S", "W"]
 HEADING_DELTA = {
     "N": (0, -1),
     "E": (1,  0),
@@ -21,14 +22,32 @@ HEADING_DELTA = {
 }
 
 # ── Catch arena ───────────────────────────────────────────────
-CATCH_COLS    = 44
-CATCH_ROWS    = 20
-SPAWN_INTERVAL = 10    # ticks between new compound spawns
-RISE_SPEED    = 1      # rows per tick (toward player)
-COMPOUNDS     = ["S", "F", "H", "C"]
+CATCH_COLS     = 44
+CATCH_ROWS     = 20
+SPAWN_INTERVAL = 10
+RISE_SPEED     = 1
+COMPOUNDS      = ["S", "F", "H", "C"]
+
+# ── Body definition ───────────────────────────────────────────
+# Segments extending LEFT of @ and RIGHT of @.
+# Each entry: (compound_key, display_char)
+BODY_LEFT  = [("F", "f"), ("S", "s"), ("H", "h")]   # drawn nearest→farthest from @
+BODY_RIGHT = [("H", "h"), ("S", "s"), ("C", "c")]   # drawn nearest→farthest from @
+
+# How far the body extends in each direction from the @ column.
+BODY_HALF_L = len(BODY_LEFT)   # 3
+BODY_HALF_R = len(BODY_RIGHT)  # 3
+
+# Clamp catch_px so the full body stays inside the arena.
+BODY_PX_MIN = BODY_HALF_L
+BODY_PX_MAX = CATCH_COLS - 1 - BODY_HALF_R
+
+# ── Float animation ───────────────────────────────────────────
+FLOAT_SPEED     = 1.0   # rows per tick
+FLOAT_MAX_DRIFT = 0.3   # max horizontal drift per tick (adds subtle organic feel)
 
 # ── Win condition ─────────────────────────────────────────────
-WIN_DEAD = 18
+WIN_DEAD = 8
 
 
 # ── State ─────────────────────────────────────────────────────
@@ -37,6 +56,11 @@ class CompoundSprite:
     x: int
     y: int
     kind: str
+
+
+@dataclass
+class SettledBody:
+    x: int   # column of @ when the body settled
 
 
 @dataclass
@@ -49,36 +73,41 @@ class LevelState:
     vent_y:  int  = 0
 
     # Phase
-    phase:   str  = "nav"   # "nav" | "catch"
-    first:   bool = True    # True until first bacterium completes nav
+    phase:   str  = "nav"
+    first:   bool = True
 
-    # Catch
-    target:     str  = "S"
-    sprites:    list = field(default_factory=list)
-    catch_px:   int  = CATCH_COLS // 2
-    catch_ticks: int = 0
+    # Catch — living bacterium
+    collected:    set  = field(default_factory=set)   # compound keys absorbed so far
+    sprites:      list = field(default_factory=list)
+    catch_px:     int  = CATCH_COLS // 2
+    catch_ticks:  int  = 0
+
+    # Float (death animation)
+    floating:     bool  = False
+    float_y:      float = 0.0
+    float_x:      float = 0.0
+    float_drift:  float = 0.0
+
+    # Settled bodies
+    settled:      list = field(default_factory=list)
 
     # Progress
-    dead_count: int  = 0
-    won:        bool = False
+    dead_count:   int  = 0
+    won:          bool = False
 
 
 # ── Generation ────────────────────────────────────────────────
 def generate_state() -> LevelState:
-    # Vent anywhere in the lower two-thirds, full width
-    vent_x = random.randint(2, NAV_W - 3)
-    vent_y = random.randint(NAV_H // 3, NAV_H - 1)
-
-    # Player starts at center with a random heading — no guaranteed "forward" answer
+    vent_x  = random.randint(2, NAV_W - 3)
+    vent_y  = random.randint(NAV_H // 3, NAV_H - 1)
     heading = random.choice(HEADINGS)
-
     return LevelState(
         nx=NAV_W // 2,
         ny=NAV_H // 2,
         heading=heading,
         vent_x=vent_x,
         vent_y=vent_y,
-        target=random.choice(COMPOUNDS),
+        catch_px=max(BODY_PX_MIN, min(BODY_PX_MAX, CATCH_COLS // 2)),
     )
 
 
@@ -151,52 +180,85 @@ def nav_move(ls: LevelState, action: str) -> str:
 def catch_tick(ls: LevelState) -> None:
     ls.catch_ticks += 1
 
-    # Spawn a new compound — biased 40% toward target
+    if ls.floating:
+        # Advance float animation — body drifts downward with slight horizontal wander.
+        ls.float_y += FLOAT_SPEED
+        ls.float_x += ls.float_drift
+        ls.float_x  = max(BODY_PX_MIN, min(BODY_PX_MAX, ls.float_x))
+        if ls.float_y >= CATCH_ROWS - 1:
+            ls.settled.append(SettledBody(x=int(ls.float_x)))
+            ls.floating = False
+            _advance_bacterium(ls)
+        return
+
+    # Spawn — bias 55% toward compounds not yet collected.
     if ls.catch_ticks % SPAWN_INTERVAL == 0:
-        kind = ls.target if random.random() < 0.4 else random.choice(COMPOUNDS)
+        needed = [c for c in COMPOUNDS if c not in ls.collected]
+        if needed and random.random() < 0.55:
+            kind = random.choice(needed)
+        else:
+            kind = random.choice(COMPOUNDS)
         ls.sprites.append(CompoundSprite(
             x=random.randint(0, CATCH_COLS - 1),
             y=CATCH_ROWS - 1,
             kind=kind,
         ))
 
-    # Rise all sprites
+    # Rise all sprites one row toward player.
     for s in ls.sprites:
         s.y -= RISE_SPEED
     ls.sprites = [s for s in ls.sprites if s.y >= 0]
 
 
 def catch_check_collision(ls: LevelState) -> str | None:
-    """Check if any sprite has reached player row (y == 0). Returns 'caught', 'wrong', or None."""
-    result = None
+    """Check if any sprite reached the player row and is uncollected.
+    Returns 'collected', 'all_collected', or None."""
+    result   = None
     remaining = []
     for s in ls.sprites:
         if s.y == 0 and abs(s.x - ls.catch_px) <= 1:
-            if result is None:
-                result = "caught" if s.kind == ls.target else "wrong"
+            if s.kind not in ls.collected:
+                ls.collected.add(s.kind)
+                result = "collected"
             # sprite consumed regardless
         else:
             remaining.append(s)
     ls.sprites = remaining
+
+    # All four types absorbed — trigger float death.
+    if set(COMPOUNDS) <= ls.collected:
+        ls.floating    = True
+        ls.float_y     = 0.0
+        ls.float_x     = float(ls.catch_px)
+        ls.float_drift = random.uniform(-FLOAT_MAX_DRIFT, FLOAT_MAX_DRIFT)
+        ls.sprites     = []
+        return "all_collected"
+
     return result
 
 
 def catch_move(ls: LevelState, dx: int) -> None:
-    ls.catch_px = max(0, min(CATCH_COLS - 1, ls.catch_px + dx))
+    ls.catch_px = max(BODY_PX_MIN, min(BODY_PX_MAX, ls.catch_px + dx))
+
+
+def _advance_bacterium(ls: LevelState) -> None:
+    """Called after a settled body lands. Reset for the next bacterium."""
+    ls.dead_count += 1
+    ls.first       = False
+    ls.sprites     = []
+    ls.catch_ticks = 0
+    ls.collected   = set()
+    ls.catch_px    = max(BODY_PX_MIN, min(BODY_PX_MAX, CATCH_COLS // 2))
+    ls.floating    = False
+    ls.float_y     = 0.0
+    ls.float_x     = 0.0
+    if ls.dead_count >= WIN_DEAD:
+        ls.won = True
 
 
 def next_bacterium(ls: LevelState) -> None:
-    """Called after a bacterium has sunk. Prepare the next one."""
-    ls.dead_count += 1
-    ls.first = False
-    ls.sprites = []
-    ls.catch_ticks = 0
-    ls.target = random.choice(COMPOUNDS)
-    ls.catch_px = CATCH_COLS // 2
-    if ls.dead_count >= WIN_DEAD:
-        ls.won = True
-    else:
-        ls.phase = "catch"   # subsequent bacteria start at vent
+    """Legacy alias — kept so dissolve path still compiles."""
+    _advance_bacterium(ls)
 
 
 # ── Carry serialization ───────────────────────────────────────
