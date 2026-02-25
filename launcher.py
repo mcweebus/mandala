@@ -24,6 +24,10 @@ LEVELS = [
 def main() -> None:
     carry = load_carry()
 
+    if carry.level_index == 0:
+        from welcome import play as play_welcome
+        play_welcome()
+
     for key, module_path in LEVELS[carry.level_index:]:
         try:
             level = importlib.import_module(module_path)
