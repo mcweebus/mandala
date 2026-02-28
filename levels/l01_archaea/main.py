@@ -15,7 +15,7 @@ from . import text as txt
 
 TICK_INTERVAL  = 0.12    # seconds between catch-phase ticks
 FRAME_INTERVAL = 0.033   # ~30 fps
-MSG_DURATION   = 3.0     # seconds a message stays visible
+MSG_DURATION   = 8.0     # seconds a message stays visible
 
 
 def run(carry: CarryState) -> CarryState:
@@ -93,12 +93,12 @@ def _play(stdscr, ls: world.LevelState, carry: CarryState) -> CarryState:
 def _dissolve(stdscr, ls: world.LevelState, carry: CarryState) -> CarryState:
     # Win beat
     view.draw_win(stdscr, txt.WIN_MESSAGE)
-    curses.napms(2500)
+    curses.napms(4500)
 
     # Dissolution — one line at a time
     for line in txt.DISSOLVE_LINES:
         view.draw_dissolve_line(stdscr, line)
-        curses.napms(700)
+        curses.napms(1500)
 
     # Final stillness
     stdscr.erase()
@@ -106,7 +106,7 @@ def _dissolve(stdscr, ls: world.LevelState, carry: CarryState) -> CarryState:
     cx = max(0, (sw - len(txt.DISSOLVED)) // 2)
     scr.addstr(stdscr, h // 2, cx, txt.DISSOLVED, dim=True)
     stdscr.refresh()
-    curses.napms(3000)
+    curses.napms(5000)
 
     # Carry
     data = world.serialize_for_carry(ls)

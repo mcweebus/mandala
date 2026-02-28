@@ -5,26 +5,18 @@
 # ── Navigation ────────────────────────────────────────────────
 ATMOSPHERE_FAR = [
     "the water is very cold.",
-    "nothing moves here.",
     "absolute dark.",
 ]
 
 ATMOSPHERE_MED = [
     "a faint thermal trace.",
-    "the water is slightly warmer here.",
-    "chemical compounds drift past.",
     "a gradient. something distant.",
-    "the current shifts.",
 ]
 
 ATMOSPHERE_CLOSE = [
-    "unmistakable heat from below.",
-    "mineral compounds in suspension.",
     "sulfur. hydrogen. something is active.",
-    "the current grows stronger.",
     "a thermal column rises near here.",
     "the rock is warm to the touch.",
-    "iron compounds. heavy in the water.",
 ]
 
 ARRIVE_VENT = "the vent. it is here."
@@ -62,7 +54,6 @@ WIN_MESSAGE = "the floor is thick enough. something has been made here."
 
 DISSOLVE_LINES = [
     "the sediment holds its shape.",
-    "the record is in the rock.",
     "what was alive is now the ground.",
     "marine soil. it will persist.",
     "the chemistry is changed. permanently.",

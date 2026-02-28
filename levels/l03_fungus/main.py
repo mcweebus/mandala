@@ -1,7 +1,7 @@
-# levels/l02_cyano/main.py
-# Level 2 — Cyanobacteria.
-# Two phases: ascend (rise 10 steps to the surface) then bloom (spread mat, build O2).
-# First level to use color. Light enters the world.
+# levels/l03_fungus/main.py
+# Level 3 — Fungus.
+# Two phases: germinate (spore senses substrate, 4 steps) then network (mycelium grows).
+# Network topology rendered with box-drawing chars. Still underground.
 
 import curses
 import random
@@ -12,10 +12,10 @@ from state import CarryState
 from . import world, view
 from . import text as txt
 
-TICK_INTERVAL       = 0.15    # seconds between bloom ticks
-FRAME_INTERVAL      = 0.033   # ~30 fps
-MSG_DURATION        = 8.0     # seconds a message stays visible
-ASCEND_STEP_INTERVAL = 1.2    # minimum seconds between ascend steps
+TICK_INTERVAL      = 0.15    # seconds between network ticks
+FRAME_INTERVAL     = 0.033   # ~30 fps
+MSG_DURATION       = 8.0     # seconds a message stays visible
+GERM_STEP_INTERVAL = 1.5     # minimum seconds between germinate steps
 
 
 def run(carry: CarryState) -> CarryState:
@@ -30,31 +30,31 @@ def _run_wrapped(stdscr, carry: CarryState) -> CarryState:
 
 
 def _play(stdscr, ls: world.LevelState, carry: CarryState) -> CarryState:
-    msg          = ""
-    msg_at       = 0.0
-    last_tick    = time.monotonic()
-    last_frame   = time.monotonic()
-    last_ascend  = 0.0
+    msg        = ""
+    msg_at     = 0.0
+    last_tick  = time.monotonic()
+    last_frame = time.monotonic()
+    last_germ  = 0.0
 
     while True:
         now = time.monotonic()
 
-        # ── Bloom tick ────────────────────────────────────────
-        if ls.phase == "bloom" and now - last_tick >= TICK_INTERVAL:
-            world.bloom_tick(ls)
+        # ── Network tick ──────────────────────────────────────
+        if ls.phase == "network" and now - last_tick >= TICK_INTERVAL:
+            world.network_tick(ls)
 
             if ls.won:
                 return _dissolve(stdscr, ls, carry)
 
-            # Coverage threshold messages (trigger once each)
-            cov_pct = int(world.get_coverage(ls) * 100)
+            # Soil progress threshold messages
+            progress_pct = int(world.get_soil_fraction(ls) / world.WIN_SOIL_FRAC * 100)
             for threshold, pool in [
-                (5,  txt.BLOOM_5),
-                (20, txt.BLOOM_20),
-                (50, txt.BLOOM_50),
+                (25, txt.SOIL_25),
+                (50, txt.SOIL_50),
+                (75, txt.SOIL_75),
             ]:
-                if cov_pct >= threshold and threshold not in ls.coverage_msgs_shown:
-                    ls.coverage_msgs_shown.add(threshold)
+                if progress_pct >= threshold and threshold not in ls.soil_msgs_shown:
+                    ls.soil_msgs_shown.add(threshold)
                     msg, msg_at = random.choice(pool), now
                     break
 
@@ -63,38 +63,38 @@ def _play(stdscr, ls: world.LevelState, carry: CarryState) -> CarryState:
         # ── Render ────────────────────────────────────────────
         if now - last_frame >= FRAME_INTERVAL:
             display_msg = msg if (now - msg_at <= MSG_DURATION) else ""
-            if ls.phase == "ascend":
-                view.draw_ascend(stdscr, ls, display_msg)
+            if ls.phase == "germinate":
+                view.draw_germinate(stdscr, ls, display_msg)
             else:
-                view.draw_bloom(stdscr, ls, display_msg)
+                view.draw_network(stdscr, ls, display_msg)
             last_frame = now
 
         # ── Input ─────────────────────────────────────────────
         key = scr.get_key(stdscr)
 
-        if ls.phase == "ascend":
-            if key in ("w", "UP") and now - last_ascend >= ASCEND_STEP_INTERVAL:
-                flavor = world.ascend_step(ls)
+        if ls.phase == "germinate":
+            if key in ("w", "UP") and now - last_germ >= GERM_STEP_INTERVAL:
+                flavor = world.germinate_step(ls)
                 msg, msg_at = flavor, now
-                last_ascend = now
-                if ls.depth == 0:
-                    ls.phase = "bloom"
+                last_germ = now
+                if ls.germ_step == 0:
+                    ls.phase = "network"
 
-        elif ls.phase == "bloom":
+        elif ls.phase == "network":
             if key in ("w", "UP"):
-                world.bloom_move(ls, -1, 0)
+                world.player_move(ls, -1, 0)
             elif key in ("s", "DOWN"):
-                world.bloom_move(ls, 1, 0)
+                world.player_move(ls, 1, 0)
             elif key in ("a", "LEFT"):
-                world.bloom_move(ls, 0, -1)
+                world.player_move(ls, 0, -1)
             elif key in ("d", "RIGHT"):
-                world.bloom_move(ls, 0, 1)
+                world.player_move(ls, 0, 1)
 
         curses.napms(10)
 
 
 def _dissolve(stdscr, ls: world.LevelState, carry: CarryState) -> CarryState:
-    # Win beat — green, 4.5 seconds
+    # Win beat
     view.draw_win(stdscr, txt.WIN_MESSAGE)
     curses.napms(4500)
 
@@ -113,8 +113,8 @@ def _dissolve(stdscr, ls: world.LevelState, carry: CarryState) -> CarryState:
 
     # Carry out
     data = world.serialize_for_carry(ls)
-    carry.substrate["cyano"] = data
+    carry.substrate["fungus"] = data
     carry.origin_x = data["origin_x"]
     carry.origin_y = data["origin_y"]
-    carry.dissolved.append("cyano \u2014 the light changed everything")
+    carry.dissolved.append("fungus \u2014 it unmade the boundary between rock and soil")
     return carry
